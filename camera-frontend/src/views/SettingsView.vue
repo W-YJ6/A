@@ -135,8 +135,43 @@
             <div class="row">
               <div class="col-md-6">
                 <div class="mb-3">
+                  <label for="rtspSettings" class="form-label">Hikvision Camera Settings</label>
+                  <div class="card p-3 bg-light">
+                    <div class="mb-2">
+                      <label for="hikvisionIp" class="form-label">Camera IP</label>
+                      <input type="text" id="hikvisionIp" class="form-control" v-model="hikvisionSettings.ip" placeholder="192.168.1.64">
+                    </div>
+                    <div class="mb-2">
+                      <label for="hikvisionPort" class="form-label">RTSP Port</label>
+                      <input type="text" id="hikvisionPort" class="form-control" v-model="hikvisionSettings.port" placeholder="554">
+                    </div>
+                    <div class="mb-2">
+                      <label for="hikvisionUsername" class="form-label">Username</label>
+                      <input type="text" id="hikvisionUsername" class="form-control" v-model="hikvisionSettings.username" placeholder="admin">
+                    </div>
+                    <div class="mb-2">
+                      <label for="hikvisionPassword" class="form-label">Password</label>
+                      <input type="password" id="hikvisionPassword" class="form-control" v-model="hikvisionSettings.password" placeholder="password">
+                    </div>
+                    <div class="mb-2">
+                      <label for="hikvisionChannel" class="form-label">Channel</label>
+                      <input type="text" id="hikvisionChannel" class="form-control" v-model="hikvisionSettings.channel" placeholder="Streaming/Channels/101">
+                      <small class="form-text text-muted">
+                        Common channels: Streaming/Channels/101 (main stream), Streaming/Channels/102 (sub stream)
+                      </small>
+                    </div>
+                    <div class="mt-2">
+                      <button @click="generateRtspUrl" class="btn btn-primary">Generate RTSP URL</button>
+                    </div>
+                  </div>
+                </div>
+                
+                <div class="mb-3">
                   <label for="rtspUrl" class="form-label">RTSP URL (for IP cameras)</label>
                   <input type="text" id="rtspUrl" class="form-control" v-model="advancedSettings.rtspUrl" placeholder="rtsp://username:password@camera-ip:port/stream">
+                  <small class="form-text text-muted">
+                    This URL will be used when connecting to IP cameras via RTSP
+                  </small>
                 </div>
                 
                 <div class="mb-3">
@@ -192,6 +227,13 @@ export default {
       },
       storageSettings: {
         retentionPeriod: '30'
+      },
+      hikvisionSettings: {
+        ip: '',
+        port: '554',
+        username: 'admin',
+        password: '',
+        channel: 'Streaming/Channels/101'
       },
       advancedSettings: {
         rtspUrl: '',
@@ -272,6 +314,14 @@ export default {
           enableTimestamp: true
         };
         
+        this.hikvisionSettings = {
+          ip: '',
+          port: '554',
+          username: 'admin',
+          password: '',
+          channel: 'Streaming/Channels/101'
+        };
+        
         this.advancedSettings = {
           rtspUrl: '',
           apiEndpoint: 'http://localhost:3000/api',
@@ -283,9 +333,29 @@ export default {
         localStorage.removeItem('cameraSettings');
         localStorage.removeItem('recordingSettings');
         localStorage.removeItem('advancedSettings');
+        localStorage.removeItem('hikvisionSettings');
         
         alert('All settings have been reset to default values.');
       }
+    },
+    
+    generateRtspUrl() {
+      const { ip, port, username, password, channel } = this.hikvisionSettings;
+      
+      if (!ip) {
+        alert('Please enter the camera IP address');
+        return;
+      }
+      
+      // Construct the RTSP URL
+      const rtspUrl = `rtsp://${username}:${password}@${ip}:${port}/${channel}`;
+      this.advancedSettings.rtspUrl = rtspUrl;
+      
+      // Save to localStorage
+      localStorage.setItem('hikvisionSettings', JSON.stringify(this.hikvisionSettings));
+      localStorage.setItem('advancedSettings', JSON.stringify(this.advancedSettings));
+      
+      alert('RTSP URL generated and saved successfully!');
     }
   },
   mounted() {
@@ -303,6 +373,11 @@ export default {
     const savedAdvancedSettings = localStorage.getItem('advancedSettings');
     if (savedAdvancedSettings) {
       this.advancedSettings = JSON.parse(savedAdvancedSettings);
+    }
+    
+    const savedHikvisionSettings = localStorage.getItem('hikvisionSettings');
+    if (savedHikvisionSettings) {
+      this.hikvisionSettings = JSON.parse(savedHikvisionSettings);
     }
   }
 };

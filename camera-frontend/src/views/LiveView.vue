@@ -14,7 +14,12 @@
           </div>
           <div class="card-body">
             <div class="video-container">
-              <video ref="videoElement" autoplay playsinline class="w-100"></video>
+              <!-- Local webcam video element -->
+              <video v-if="!isRtspStream" ref="videoElement" autoplay playsinline class="w-100"></video>
+              
+              <!-- RTSP stream canvas -->
+              <div v-if="isRtspStream" ref="rtspPlayer" class="rtsp-player"></div>
+              
               <canvas ref="canvasElement" style="display: none;"></canvas>
               <div v-if="!isStreaming" class="video-placeholder d-flex align-items-center justify-content-center">
                 <p class="text-muted">Camera feed not active</p>
@@ -25,9 +30,12 @@
         
         <div class="mt-3">
           <button @click="takeSnapshot" class="btn btn-primary" :disabled="!isStreaming">Take Snapshot</button>
-          <button @click="toggleRecording" class="btn" :class="isRecording ? 'btn-danger' : 'btn-success'" :disabled="!isStreaming">
+          <button @click="toggleRecording" class="btn" :class="isRecording ? 'btn-danger' : 'btn-success'" :disabled="!isStreaming || isRtspStream">
             {{ isRecording ? 'Stop Recording' : 'Start Recording' }}
           </button>
+          <small v-if="isRtspStream" class="text-muted ms-2">
+            (Recording not available for RTSP streams in browser)
+          </small>
         </div>
       </div>
       
@@ -38,21 +46,63 @@
           </div>
           <div class="card-body">
             <div class="mb-3">
-              <label for="cameraSelect" class="form-label">Select Camera</label>
-              <select id="cameraSelect" class="form-select" v-model="selectedCamera" @change="changeCameraSource">
-                <option v-for="camera in availableCameras" :key="camera.deviceId" :value="camera.deviceId">
-                  {{ camera.label || `Camera ${camera.deviceId.substring(0, 5)}...` }}
-                </option>
+              <label for="cameraTypeSelect" class="form-label">Camera Type</label>
+              <select id="cameraTypeSelect" class="form-select" v-model="cameraType" @change="handleCameraTypeChange">
+                <option value="webcam">Local Webcam</option>
+                <option value="rtsp">IP Camera (RTSP)</option>
               </select>
             </div>
             
-            <div class="mb-3">
-              <label for="resolutionSelect" class="form-label">Resolution</label>
-              <select id="resolutionSelect" class="form-select" v-model="selectedResolution" @change="changeResolution">
-                <option value="640x480">640x480</option>
-                <option value="1280x720">1280x720 (HD)</option>
-                <option value="1920x1080">1920x1080 (Full HD)</option>
-              </select>
+            <!-- Webcam settings -->
+            <div v-if="cameraType === 'webcam'">
+              <div class="mb-3">
+                <label for="cameraSelect" class="form-label">Select Camera</label>
+                <select id="cameraSelect" class="form-select" v-model="selectedCamera" @change="changeCameraSource">
+                  <option v-for="camera in availableCameras" :key="camera.deviceId" :value="camera.deviceId">
+                    {{ camera.label || `Camera ${camera.deviceId.substring(0, 5)}...` }}
+                  </option>
+                </select>
+              </div>
+              
+              <div class="mb-3">
+                <label for="resolutionSelect" class="form-label">Resolution</label>
+                <select id="resolutionSelect" class="form-select" v-model="selectedResolution" @change="changeResolution">
+                  <option value="640x480">640x480</option>
+                  <option value="1280x720">1280x720 (HD)</option>
+                  <option value="1920x1080">1920x1080 (Full HD)</option>
+                </select>
+              </div>
+            </div>
+            
+            <!-- RTSP settings -->
+            <div v-if="cameraType === 'rtsp'">
+              <div class="mb-3">
+                <label for="rtspUrl" class="form-label">RTSP URL</label>
+                <input 
+                  type="text" 
+                  id="rtspUrl" 
+                  class="form-control" 
+                  v-model="rtspUrl" 
+                  placeholder="rtsp://username:password@ip:port/channel"
+                />
+                <small class="form-text text-muted">
+                  Example for Hikvision: rtsp://admin:password@192.168.1.64:554/Streaming/Channels/101
+                </small>
+              </div>
+              
+              <div class="mb-3">
+                <label for="streamId" class="form-label">Stream ID</label>
+                <input 
+                  type="text" 
+                  id="streamId" 
+                  class="form-control" 
+                  v-model="streamId" 
+                  placeholder="camera1"
+                />
+                <small class="form-text text-muted">
+                  Unique identifier for this camera stream
+                </small>
+              </div>
             </div>
           </div>
         </div>
@@ -86,12 +136,16 @@
 </template>
 
 <script>
+import JSMpeg from '@cycjimmy/jsmpeg-player';
+import axios from 'axios';
+
 export default {
   name: 'LiveView',
   data() {
     return {
       isStreaming: false,
       isRecording: false,
+      isRtspStream: false,
       mediaStream: null,
       mediaRecorder: null,
       recordedChunks: [],
@@ -100,6 +154,11 @@ export default {
       selectedResolution: '640x480',
       snapshots: [],
       recordingStartTime: null,
+      cameraType: 'webcam',
+      rtspUrl: '',
+      streamId: 'camera1',
+      jsmpegPlayer: null,
+      proxyServerUrl: 'http://localhost:12001', // RTSP proxy server URL
     };
   },
   mounted() {
@@ -109,6 +168,12 @@ export default {
     this.stopCamera();
   },
   methods: {
+    handleCameraTypeChange() {
+      if (this.isStreaming) {
+        this.stopCamera();
+      }
+    },
+    
     async getAvailableCameras() {
       try {
         const devices = await navigator.mediaDevices.enumerateDevices();
@@ -124,6 +189,14 @@ export default {
     },
     
     async startCamera() {
+      if (this.cameraType === 'webcam') {
+        await this.startWebcam();
+      } else if (this.cameraType === 'rtsp') {
+        await this.startRtspStream();
+      }
+    },
+    
+    async startWebcam() {
       try {
         const [width, height] = this.selectedResolution.split('x').map(Number);
         
@@ -140,9 +213,49 @@ export default {
         const videoElement = this.$refs.videoElement;
         videoElement.srcObject = this.mediaStream;
         this.isStreaming = true;
+        this.isRtspStream = false;
       } catch (error) {
-        console.error('Error starting camera:', error);
-        alert('Failed to start camera. Please check camera permissions.');
+        console.error('Error starting webcam:', error);
+        alert('Failed to start webcam. Please check camera permissions.');
+      }
+    },
+    
+    async startRtspStream() {
+      if (!this.rtspUrl || !this.streamId) {
+        alert('Please enter RTSP URL and Stream ID');
+        return;
+      }
+      
+      try {
+        // Request the proxy server to start streaming
+        await axios.post(`${this.proxyServerUrl}/api/stream`, {
+          rtspUrl: this.rtspUrl,
+          streamId: this.streamId
+        });
+        
+        // Create JSMpeg player
+        if (this.jsmpegPlayer) {
+          this.jsmpegPlayer.destroy();
+        }
+        
+        // Clear the container
+        const playerElement = this.$refs.rtspPlayer;
+        playerElement.innerHTML = '';
+        
+        // Create new player
+        const wsUrl = `ws://${window.location.hostname}:12001?streamId=${this.streamId}`;
+        this.jsmpegPlayer = new JSMpeg.Player(wsUrl, {
+          canvas: playerElement,
+          autoplay: true,
+          audio: false,
+          loop: false
+        });
+        
+        this.isStreaming = true;
+        this.isRtspStream = true;
+      } catch (error) {
+        console.error('Error starting RTSP stream:', error);
+        alert(`Failed to start RTSP stream: ${error.message}`);
       }
     },
     
@@ -151,36 +264,61 @@ export default {
         this.stopRecording();
       }
       
-      if (this.mediaStream) {
-        this.mediaStream.getTracks().forEach(track => track.stop());
-        this.mediaStream = null;
-      }
-      
-      const videoElement = this.$refs.videoElement;
-      if (videoElement) {
-        videoElement.srcObject = null;
+      if (this.cameraType === 'webcam') {
+        if (this.mediaStream) {
+          this.mediaStream.getTracks().forEach(track => track.stop());
+          this.mediaStream = null;
+        }
+        
+        const videoElement = this.$refs.videoElement;
+        if (videoElement) {
+          videoElement.srcObject = null;
+        }
+      } else if (this.cameraType === 'rtsp') {
+        if (this.jsmpegPlayer) {
+          this.jsmpegPlayer.destroy();
+          this.jsmpegPlayer = null;
+        }
+        
+        // Tell the proxy server to stop streaming
+        if (this.streamId) {
+          axios.post(`${this.proxyServerUrl}/api/stop`, {
+            streamId: this.streamId
+          }).catch(error => {
+            console.error('Error stopping RTSP stream:', error);
+          });
+        }
       }
       
       this.isStreaming = false;
+      this.isRtspStream = false;
     },
     
     async changeCameraSource() {
-      if (this.isStreaming) {
+      if (this.isStreaming && this.cameraType === 'webcam') {
         await this.stopCamera();
-        await this.startCamera();
+        await this.startWebcam();
       }
     },
     
     async changeResolution() {
-      if (this.isStreaming) {
+      if (this.isStreaming && this.cameraType === 'webcam') {
         await this.stopCamera();
-        await this.startCamera();
+        await this.startWebcam();
       }
     },
     
     takeSnapshot() {
       if (!this.isStreaming) return;
       
+      if (this.cameraType === 'webcam') {
+        this.takeWebcamSnapshot();
+      } else if (this.cameraType === 'rtsp') {
+        this.takeRtspSnapshot();
+      }
+    },
+    
+    takeWebcamSnapshot() {
       const videoElement = this.$refs.videoElement;
       const canvasElement = this.$refs.canvasElement;
       
@@ -208,6 +346,29 @@ export default {
       }
     },
     
+    takeRtspSnapshot() {
+      if (!this.jsmpegPlayer) return;
+      
+      // Get the canvas from JSMpeg player
+      const canvas = this.$refs.rtspPlayer.querySelector('canvas');
+      if (!canvas) return;
+      
+      // Get image data URL
+      const dataUrl = canvas.toDataURL('image/png');
+      
+      // Create timestamp
+      const now = new Date();
+      const timestamp = now.toLocaleString();
+      
+      // Add to snapshots
+      this.snapshots.unshift({ dataUrl, timestamp });
+      
+      // Limit number of snapshots shown
+      if (this.snapshots.length > 5) {
+        this.snapshots.pop();
+      }
+    },
+    
     downloadSnapshot(snapshot) {
       const link = document.createElement('a');
       link.href = snapshot.dataUrl;
@@ -220,6 +381,8 @@ export default {
     },
     
     toggleRecording() {
+      if (this.isRtspStream) return; // Not available for RTSP streams
+      
       if (this.isRecording) {
         this.stopRecording();
       } else {
@@ -228,7 +391,7 @@ export default {
     },
     
     startRecording() {
-      if (!this.isStreaming) return;
+      if (!this.isStreaming || this.isRtspStream) return;
       
       this.recordedChunks = [];
       const options = { mimeType: 'video/webm;codecs=vp9,opus' };
@@ -316,5 +479,17 @@ export default {
 .snapshot-item img {
   width: 100%;
   height: auto;
+}
+
+.rtsp-player {
+  width: 100%;
+  height: 100%;
+  background-color: #000;
+}
+
+.rtsp-player canvas {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 </style>
